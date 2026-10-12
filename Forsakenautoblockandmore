@@ -1,0 +1,392 @@
+-- Forsaken | Auto Block + Auto Punch (clean)
+local Players = game:GetService("Players")
+local RS = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local CoreGui = game:GetService("CoreGui")
+local UIS = game:GetService("UserInputService")
+
+local plr = Players.LocalPlayer
+local WS = workspace
+
+local blockEnabled = false
+local punchEnabled = false
+
+local network
+do
+    local mods = RS:FindFirstChild("Modules")
+    local net = mods and mods:FindFirstChild("Network", true)
+    if net then
+        local n = net:FindFirstChild("Network")
+        network = (n and n:FindFirstChildOfClass("RemoteEvent")) or net:FindFirstChildOfClass("RemoteEvent")
+    end
+end
+
+local fireSignal = (typeof(firesignal) == "function" and firesignal)
+    or (typeof(fire_signal) == "function" and fire_signal) or nil
+
+local function getClosestKiller(maxDist)
+    maxDist = maxDist or 55
+    local char = plr.Character
+    if not char then return nil end
+    local root = char:FindFirstChild("HumanoidRootPart")
+    if not root then return nil end
+    local pf = WS:FindFirstChild("Players")
+    local kf = pf and pf:FindFirstChild("Killers")
+    if not kf then return nil end
+    local best, bestD = nil, maxDist
+    for _, k in ipairs(kf:GetChildren()) do
+        if Players:GetPlayerFromCharacter(k) then
+            local kr = k:FindFirstChild("HumanoidRootPart")
+            if kr then
+                local d = (kr.Position - root.Position).Magnitude
+                if d < bestD then best, bestD = k, d end
+            end
+        end
+    end
+    return best, bestD
+end
+
+-- AUTO BLOCK
+local detectPart
+local function getPart()
+    if detectPart and detectPart.Parent then return detectPart end
+    detectPart = Instance.new("Part")
+    detectPart.Name = "PlusABDetect"
+    detectPart.Color = Color3.new(0, 0, 0)
+    detectPart.Size = Vector3.new(5.2, 6, 5.65) * 2.2
+    detectPart.CanCollide = false
+    detectPart.CanQuery = true
+    detectPart.CanTouch = false
+    detectPart.Anchored = true
+    detectPart.CastShadow = false
+    detectPart.Material = Enum.Material.ForceField
+    detectPart.Transparency = 1
+    detectPart.Parent = WS:FindFirstChild("Hitboxes") or WS
+    return detectPart
+end
+
+local customHB = {
+    golemslash = { size = Vector3.new(6, 2, 7), offset = CFrame.new(0, 0, -5.5) },
+}
+
+local blockCD = 0
+local function fireBlock()
+    if tick() < blockCD then return end
+    blockCD = tick() + 0.15
+    local mainUI = plr.PlayerGui:FindFirstChild("MainUI")
+    local container = mainUI and mainUI:FindFirstChild("AbilityContainer")
+    local btn = container and container:FindFirstChild("Block")
+    if not btn then return end
+    if fireSignal then
+        pcall(function() fireSignal(btn.MouseButton1Click) end)
+        return
+    end
+    if network then
+        pcall(function() network:FireServer("UseActorAbility", { "Block" }) end)
+        pcall(function() network:FireServer("UseActorAbility", "Block") end)
+    end
+end
+
+local function checkBlockHit(killer)
+    if not blockEnabled then return end
+    local myChar = plr.Character
+    if not myChar or not myChar.Parent then return end
+    if myChar.Parent.Name ~= "Survivors" then return end
+    local myHB = myChar:FindFirstChild("QueryHitbox")
+    if not myHB then return end
+    local kHB = killer:FindFirstChild("QueryHitbox")
+    if not kHB or not killer.Parent then return end
+
+    local params = OverlapParams.new()
+    params.MaxParts = 1
+    params.FilterType = Enum.RaycastFilterType.Include
+    params.FilterDescendantsInstances = { myHB }
+
+    local part = getPart()
+    local custom = customHB[killer.Name:lower()]
+    part.Size = (custom and custom.size or Vector3.new(5.2, 6, 5.65)) * 2.2
+    part.CFrame = kHB.CFrame * (custom and custom.offset or CFrame.new(0, 0, -3.5))
+
+    local hit = WS:GetPartsInPart(part, params)
+    if #hit > 0 then fireBlock() end
+end
+
+local function hookKiller(killer)
+    if not killer or not killer.Parent then return end
+    local hum = killer:FindFirstChildOfClass("Humanoid") or killer:WaitForChild("Humanoid", 5)
+    if not hum then return end
+    local animator = hum:FindFirstChildOfClass("Animator") or hum:WaitForChild("Animator", 5)
+    if not animator then return end
+    if animator:GetAttribute("ABFixed") then return end
+    animator:SetAttribute("ABFixed", true)
+
+    animator.AnimationPlayed:Connect(function(track)
+        if not blockEnabled then return end
+        if track.Looped then return end
+        task.spawn(function()
+            local endT = tick() + 0.28
+            while tick() < endT do
+                if not blockEnabled or not killer.Parent then return end
+                checkBlockHit(killer)
+                RunService.RenderStepped:Wait()
+            end
+        end)
+    end)
+end
+
+local playersFolder = WS:WaitForChild("Players", 15)
+local killersFolder = playersFolder and playersFolder:FindFirstChild("Killers")
+if killersFolder then
+    for _, k in ipairs(killersFolder:GetChildren()) do task.spawn(hookKiller, k) end
+    killersFolder.ChildAdded:Connect(function(k) task.spawn(hookKiller, k) end)
+end
+
+-- AUTO PUNCH
+local punchCD = 0
+local punchInProgress = false
+
+local function doPunch()
+    if punchInProgress then return end
+    if tick() < punchCD then return end
+    punchCD = tick() + 0.5
+
+    local char = plr.Character
+    if not char then return end
+    local root = char:FindFirstChild("HumanoidRootPart")
+    if not root then return end
+    local sm = char:FindFirstChild("SpeedMultipliers")
+    local fm = char:FindFirstChild("FOVMultipliers")
+    if not sm or not fm then return end
+
+    punchInProgress = true
+
+    local mainUI = plr.PlayerGui:FindFirstChild("MainUI")
+    local container = mainUI and mainUI:FindFirstChild("AbilityContainer")
+    local punchBtn = container and container:FindFirstChild("Punch")
+
+    task.wait(0.08)
+
+    if fireSignal and punchBtn then
+        pcall(function() fireSignal(punchBtn.MouseButton1Click) end)
+    elseif network then
+        pcall(function() network:FireServer("UseActorAbility", { "Punch" }) end)
+        pcall(function() network:FireServer("UseActorAbility", "Punch") end)
+    else
+        punchInProgress = false
+        return
+    end
+
+    char:SetAttribute("DisableShiftLockMovement", true)
+
+    local selectedVelocity
+    local conn
+    conn = RunService.RenderStepped:Connect(function()
+        local killer = getClosestKiller(55)
+        if not killer then return end
+        local kr = killer:FindFirstChild("HumanoidRootPart")
+        if not kr or not root.Parent then return end
+        local target = Vector3.new(kr.Position.X, root.Position.Y, kr.Position.Z)
+        local cf = CFrame.new(root.Position, target)
+        char:SetPrimaryPartCFrame(cf)
+        if not selectedVelocity then
+            root.Velocity = cf.LookVector * 32
+            selectedVelocity = root.Velocity
+        else
+            selectedVelocity = root.Velocity:Lerp(selectedVelocity, 0.8)
+            root.Velocity = selectedVelocity
+        end
+    end)
+
+    local endT = tick() + 1.5
+    repeat
+        task.wait(0.05)
+        local hit = fm:FindFirstChild("HitRegistered")
+        local stillPunching = sm:FindFirstChild("PunchAbility")
+        if hit or not stillPunching then break end
+    until tick() > endT
+
+    if conn then conn:Disconnect() end
+    task.wait(0.2)
+    char:SetAttribute("DisableShiftLockMovement", false)
+    punchInProgress = false
+end
+
+local function watchChar(char)
+    if not char then return end
+    char:GetAttributeChangedSignal("TimesHit"):Connect(function()
+        if not punchEnabled then return end
+        local sm = char:FindFirstChild("SpeedMultipliers")
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if not sm or not hum then return end
+        if not sm:FindFirstChild("GuestBlocking") then return end
+        local overheal = hum:GetAttribute("Overheal")
+        if not overheal or overheal < 10 then return end
+        if not getClosestKiller(55) then return end
+        task.spawn(doPunch)
+    end)
+end
+
+plr.CharacterAdded:Connect(function(c)
+    task.wait(0.5)
+    watchChar(c)
+end)
+if plr.Character then watchChar(plr.Character) end
+
+-- GUI
+for _, g in ipairs(CoreGui:GetChildren()) do
+    if g.Name == "F_ABAP" then g:Destroy() end
+end
+
+local gui = Instance.new("ScreenGui")
+gui.Name = "F_ABAP"
+gui.ResetOnSpawn = false
+gui.IgnoreGuiInset = true
+pcall(function() gui.Parent = CoreGui end)
+if not gui.Parent then gui.Parent = plr:WaitForChild("PlayerGui") end
+
+local pill = Instance.new("TextButton")
+pill.Size = UDim2.new(0, 44, 0, 44)
+pill.Position = UDim2.new(0, 20, 0, 210)
+pill.BackgroundColor3 = Color3.fromRGB(20, 20, 26)
+pill.Text = "A"
+pill.TextColor3 = Color3.fromRGB(200, 200, 220)
+pill.TextSize = 18
+pill.Font = Enum.Font.GothamBold
+pill.BorderSizePixel = 0
+pill.AutoButtonColor = false
+pill.Parent = gui
+Instance.new("UICorner", pill).CornerRadius = UDim.new(1, 0)
+local ps = Instance.new("UIStroke", pill)
+ps.Color = Color3.fromRGB(60, 60, 75)
+ps.Thickness = 1
+
+local panel = Instance.new("Frame")
+panel.Size = UDim2.new(0, 200, 0, 92)
+panel.Position = pill.Position
+panel.BackgroundColor3 = Color3.fromRGB(18, 18, 22)
+panel.BackgroundTransparency = 0.08
+panel.BorderSizePixel = 0
+panel.Visible = false
+panel.Active = true
+panel.Parent = gui
+Instance.new("UICorner", panel).CornerRadius = UDim.new(0, 8)
+local pstr = Instance.new("UIStroke", panel)
+pstr.Color = Color3.fromRGB(60, 60, 75)
+pstr.Thickness = 1
+
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, -40, 0, 22)
+title.Position = UDim2.new(0, 10, 0, 4)
+title.BackgroundTransparency = 1
+title.Text = "Auto Block + Punch"
+title.TextColor3 = Color3.fromRGB(220, 220, 230)
+title.TextSize = 12
+title.Font = Enum.Font.GothamMedium
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.Parent = panel
+
+local closeBtn = Instance.new("TextButton")
+closeBtn.Size = UDim2.new(0, 20, 0, 20)
+closeBtn.Position = UDim2.new(1, -24, 0, 3)
+closeBtn.BackgroundTransparency = 1
+closeBtn.Text = "X"
+closeBtn.TextColor3 = Color3.fromRGB(180, 180, 190)
+closeBtn.TextSize = 14
+closeBtn.Font = Enum.Font.GothamBold
+closeBtn.Parent = panel
+
+local blockToggle = Instance.new("TextButton")
+blockToggle.Size = UDim2.new(1, -16, 0, 26)
+blockToggle.Position = UDim2.new(0, 8, 0, 28)
+blockToggle.BackgroundColor3 = Color3.fromRGB(32, 32, 40)
+blockToggle.BorderSizePixel = 0
+blockToggle.Text = "Auto Block: OFF"
+blockToggle.TextColor3 = Color3.fromRGB(200, 200, 210)
+blockToggle.TextSize = 12
+blockToggle.Font = Enum.Font.Gotham
+blockToggle.Parent = panel
+Instance.new("UICorner", blockToggle).CornerRadius = UDim.new(0, 6)
+
+local punchToggle = Instance.new("TextButton")
+punchToggle.Size = UDim2.new(1, -16, 0, 26)
+punchToggle.Position = UDim2.new(0, 8, 0, 58)
+punchToggle.BackgroundColor3 = Color3.fromRGB(32, 32, 40)
+punchToggle.BorderSizePixel = 0
+punchToggle.Text = "Auto Punch: OFF"
+punchToggle.TextColor3 = Color3.fromRGB(200, 200, 210)
+punchToggle.TextSize = 12
+punchToggle.Font = Enum.Font.Gotham
+punchToggle.Parent = panel
+Instance.new("UICorner", punchToggle).CornerRadius = UDim.new(0, 6)
+
+local function refresh()
+    blockToggle.Text = "Auto Block: " .. (blockEnabled and "ON" or "OFF")
+    blockToggle.TextColor3 = blockEnabled
+        and Color3.fromRGB(140, 230, 160)
+        or Color3.fromRGB(200, 200, 210)
+    punchToggle.Text = "Auto Punch: " .. (punchEnabled and "ON" or "OFF")
+    punchToggle.TextColor3 = punchEnabled
+        and Color3.fromRGB(140, 230, 160)
+        or Color3.fromRGB(200, 200, 210)
+    local both = blockEnabled and punchEnabled
+    pill.BackgroundColor3 = both
+        and Color3.fromRGB(20, 45, 25)
+        or (blockEnabled or punchEnabled) and Color3.fromRGB(30, 30, 35)
+        or Color3.fromRGB(20, 20, 26)
+    ps.Color = both
+        and Color3.fromRGB(80, 220, 120)
+        or (blockEnabled or punchEnabled) and Color3.fromRGB(200, 160, 60)
+        or Color3.fromRGB(60, 60, 75)
+end
+
+blockToggle.MouseButton1Click:Connect(function()
+    blockEnabled = not blockEnabled
+    refresh()
+end)
+
+punchToggle.MouseButton1Click:Connect(function()
+    punchEnabled = not punchEnabled
+    refresh()
+end)
+
+pill.MouseButton1Click:Connect(function()
+    panel.Position = pill.Position
+    pill.Visible = false
+    panel.Visible = true
+end)
+
+closeBtn.MouseButton1Click:Connect(function()
+    pill.Position = panel.Position
+    panel.Visible = false
+    pill.Visible = true
+end)
+
+local function makeDrag(handle)
+    local dragging, dragStart, startPos
+    handle.InputBegan:Connect(function(i)
+        if i.UserInputType == Enum.UserInputType.MouseButton1
+        or i.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            dragStart = i.Position
+            startPos = handle.Position
+            i.Changed:Connect(function()
+                if i.UserInputState == Enum.UserInputState.End then dragging = false end
+            end)
+        end
+    end)
+    UIS.InputChanged:Connect(function(i)
+        if not dragging then return end
+        if i.UserInputType == Enum.UserInputType.MouseMovement
+        or i.UserInputType == Enum.UserInputType.Touch then
+            local d = i.Position - dragStart
+            handle.Position = UDim2.new(
+                startPos.X.Scale, startPos.X.Offset + d.X,
+                startPos.Y.Scale, startPos.Y.Offset + d.Y)
+        end
+    end)
+end
+
+makeDrag(pill)
+makeDrag(panel)
+
+refresh()
